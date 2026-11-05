@@ -1,474 +1,378 @@
 /**
- * Backend Google Apps Script – phiếu khảo sát + quản trị
+ * Backend Google Apps Script – App khảo sát Tâm lý NĐT & Rủi ro sụp đổ giá CP
+ * Lưu phiếu vào Google Sheets, dùng chung cho nhiều người nhập.
  *
- * Deploy → Web app → Execute as: Me → Who has access: Anyone
- * Đặt ADMIN_KEY bên dưới; không để mã này trên client.
+ * Cách dùng:
+ * 1. Đổi ADMIN_KEY bên dưới thành mật khẩu riêng.
+ * 2. Lưu (Ctrl+S) → chọn hàm "setup" → Chạy → cấp quyền.
+ * 3. Triển khai → Tùy chọn triển khai mới → Ứng dụng web
+ *    (Thực thi với tư cách: Tôi · Người có quyền truy cập: Bất kỳ ai).
  */
 
-/* Đặt mã thật trong Apps Script đã triển khai — KHÔNG commit mã vào Git */
-var ADMIN_KEY = "DOI_MA_NAY_TREN_APPS_SCRIPT";
-var SHEET_RESPONSES = "responses";
-var SHEET_AUDIT = "audit_log";
-var SHEET_META = "meta";
+const ADMIN_KEY = 'DOI_MAT_KHAU_NAY';   // ← ĐỔI THÀNH MẬT KHẨU RIÊNG
+const TZ = 'Asia/Ho_Chi_Minh';
+
+const SHEET_RESPONSES = 'responses';
+const SHEET_AUDIT = 'audit_log';
+const SHEET_META = 'meta';
+
+// Cột hệ thống (cố định, luôn đứng đầu). Cột câu trả lời được thêm tự động phía sau.
+const SYS_COLS = [
+  'seq', 'form_code', 'display_name', 'source', 'entered_by', 'paper_date',
+  'server_time', 'updated_at', 'updated_by', 'edited', 'deleted', 'delete_reason',
+  'client_uuid', 'start_time', 'end_time', 'duration_sec', 'valid', 'flags',
+  'survey_version', 'answers_json'
+];
+const AUDIT_COLS = ['time', 'form_code', 'action', 'variable', 'old_value', 'new_value', 'reason', 'by'];
+
+// Các biến hiện trong bảng danh sách (Khối 2)
+const LIST_ANSWER_FIELDS = ['A1', 'A2', 'A11'];
+
+/* ========================= THIẾT LẬP ========================= */
+
+function setup() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSheet_(ss, SHEET_RESPONSES, SYS_COLS);
+  ensureSheet_(ss, SHEET_AUDIT, AUDIT_COLS);
+  const meta = ensureSheet_(ss, SHEET_META, ['key', 'value']);
+  if (meta.getLastRow() < 2) meta.appendRow(['last_seq', 0]);
+  const def = ss.getSheetByName('Trang tính1') || ss.getSheetByName('Sheet1');
+  if (def && ss.getSheets().length > 3 && def.getLastRow() === 0) ss.deleteSheet(def);
+  Logger.log('Đã thiết lập xong 3 sheet: responses, audit_log, meta');
+}
+
+function ensureSheet_(ss, name, headers) {
+  let sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  if (sh.getLastRow() === 0) {
+    sh.appendRow(headers);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+  }
+  return sh;
+}
+
+/* ========================= ĐỊNH TUYẾN ========================= */
+
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  return handle_(p.action || 'ping', p);
+}
 
 function doPost(e) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(30000);
+  let body = {};
   try {
-    var raw = (e && e.postData && e.postData.contents) || "{}";
-    var data = JSON.parse(raw);
-    var action = data.action || (data.form_code && data.edit_reason ? "update" : "create");
-
-    if (action === "auth") return json_(auth_(data));
-    if (action === "list") return json_(requireKey_(data) && list_(data));
-    if (action === "get") return json_(requireKey_(data) && get_(data));
-    if (action === "update") return json_(requireKey_(data) && update_(data));
-    if (action === "softDelete") return json_(requireKey_(data) && softDelete_(data));
-    if (action === "restore") return json_(requireKey_(data) && restore_(data));
-    if (action === "export") return json_(requireKey_(data) && export_(data));
-    if (action === "create" || !data.action) return json_(create_(data));
-    return json_({ ok: false, error: "Unknown action" });
+    body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
   } catch (err) {
-    return json_({ ok: false, error: String(err) });
+    return json_({ ok: false, error: 'BAD_JSON' });
+  }
+  return handle_(body.action, body);
+}
+
+function handle_(action, p) {
+  try {
+    if (action === 'ping') return json_({ ok: true, data: { time: now_() } });
+    if (action === 'createPublic') return json_({ ok: true, data: create_(p, 'online') });
+
+    if (String(p.key || '') !== ADMIN_KEY) return json_({ ok: false, error: 'UNAUTHORIZED' });
+
+    switch (action) {
+      case 'create':     return json_({ ok: true, data: create_(p, p.source || 'paper') });
+      case 'list':       return json_({ ok: true, data: list_(p) });
+      case 'get':        return json_({ ok: true, data: get_(p.form_code) });
+      case 'update':     return json_({ ok: true, data: update_(p) });
+      case 'softDelete': return json_({ ok: true, data: setDeleted_(p, 1) });
+      case 'restore':    return json_({ ok: true, data: setDeleted_(p, 0) });
+      case 'stats':      return json_({ ok: true, data: stats_() });
+      case 'exportAll':  return json_({ ok: true, data: exportAll_() });
+      case 'audit':      return json_({ ok: true, data: readAll_(SHEET_AUDIT).rows });
+      default:           return json_({ ok: false, error: 'UNKNOWN_ACTION' });
+    }
+  } catch (err) {
+    return json_({ ok: false, error: String(err && err.message || err) });
+  }
+}
+
+/* ========================= NGHIỆP VỤ ========================= */
+
+/**
+ * p = {
+ *   answers: { A1: 2, A8: [1,3], TL1: 4, G5_other: "…", ... },
+ *   entered_by, paper_date, client_uuid, start_time, end_time, duration_sec,
+ *   valid (0/1), flags ("R1;speeder"), survey_version
+ * }
+ */
+function create_(p, source) {
+  if (!p.answers || typeof p.answers !== 'object') throw new Error('MISSING_ANSWERS');
+  if (!p.client_uuid) throw new Error('MISSING_CLIENT_UUID');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const sh = sheet_(SHEET_RESPONSES);
+    const data = readAll_(SHEET_RESPONSES);
+
+    // Chống trùng: cùng client_uuid → trả lại phiếu đã có
+    const dup = data.rows.find(r => r.client_uuid === p.client_uuid);
+    if (dup) return { duplicate: true, form_code: dup.form_code, display_name: dup.display_name, seq: dup.seq };
+
+    const seq = nextSeq_();
+    const prefix = source === 'online' ? 'PKS-' : 'PKG-';
+    const rec = {
+      seq: seq,
+      form_code: prefix + pad_(seq, 4),
+      display_name: 'Phiếu số ' + pad_(seq, 3),
+      source: source,
+      entered_by: source === 'online' ? '' : String(p.entered_by || ''),
+      paper_date: String(p.paper_date || ''),
+      server_time: now_(),
+      updated_at: '',
+      updated_by: '',
+      edited: 0,
+      deleted: 0,
+      delete_reason: '',
+      client_uuid: String(p.client_uuid),
+      start_time: String(p.start_time || ''),
+      end_time: String(p.end_time || ''),
+      duration_sec: p.duration_sec === undefined ? '' : Number(p.duration_sec),
+      valid: p.valid === undefined ? '' : Number(p.valid),
+      flags: String(p.flags || ''),
+      survey_version: String(p.survey_version || ''),
+      answers_json: JSON.stringify(p.answers)
+    };
+
+    const headers = ensureAnswerColumns_(sh, Object.keys(p.answers));
+    sh.appendRow(headers.map(h => cellValue_(h in rec ? rec[h] : p.answers[h])));
+    return { duplicate: false, form_code: rec.form_code, display_name: rec.display_name, seq: seq, server_time: rec.server_time };
   } finally {
     lock.releaseLock();
   }
 }
 
-function doGet(e) {
-  e = e || { parameter: {} };
-  if ((e.parameter.key || "") !== ADMIN_KEY) {
-    return json_({ ok: false, error: "Unauthorized" });
-  }
-  return json_(list_({ page: 1, pageSize: 1, filters: {} }));
-}
+function list_(p) {
+  const page = Math.max(1, Number(p.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(p.pageSize) || 20));
+  const q = String(p.q || '').trim().toLowerCase();
+  const status = p.status || 'all';            // all | valid | flagged | deleted
+  const sortDir = p.sortDir === 'asc' ? 1 : -1; // mặc định mới nhất ở đầu
 
-function auth_(data) {
-  if ((data.key || "") !== ADMIN_KEY) return { ok: false, error: "Mã quản trị không đúng" };
-  return { ok: true };
-}
+  let rows = readAll_(SHEET_RESPONSES).rows;
 
-function requireKey_(data) {
-  if ((data.key || "") !== ADMIN_KEY) throw new Error("Unauthorized");
-  return true;
-}
-
-function create_(data) {
-  if (!data.respondent_id) return { ok: false, error: "Thiếu respondent_id" };
-  var sheet = getSheet_(SHEET_RESPONSES);
-  var headers = getHeaders_();
-  ensureHeader_(sheet, headers);
-
-  var last = sheet.getLastRow();
-  if (last > 1) {
-    var ids = sheet.getRange(2, colIndex_(headers, "respondent_id"), last - 1, 1).getValues();
-    for (var i = 0; i < ids.length; i++) {
-      if (String(ids[i][0]) === String(data.respondent_id)) {
-        return { ok: false, error: "Trùng respondent_id" };
-      }
-    }
-  }
-
-  var source = data.source === "paper" ? "paper" : "online";
-  var form_code = nextFormCode_(source);
-  data.form_code = form_code;
-  data.server_time = new Date().toISOString();
-  data.edited = 0;
-  data.deleted = 0;
-  data.delete_reason = "";
-  data.source = source;
-
-  var encoded = encodeRowApps_(data);
-  var row = headers.map(function (h) {
-    var v = encoded[h];
-    return v === undefined || v === null ? "" : v;
-  });
-  sheet.appendRow(row);
-
-  // Lưu JSON gốc để get/update chính xác
-  savePayload_(form_code, data);
-
-  return { ok: true, form_code: form_code };
-}
-
-function list_(data) {
-  var all = loadAllPayloads_();
-  var f = data.filters || {};
-  var rows = all.slice();
-
-  if (!f.includeDeleted && f.status !== "deleted") rows = rows.filter(function (r) { return !r.deleted; });
-  if (f.status === "deleted") rows = rows.filter(function (r) { return !!r.deleted; });
-  if (f.status === "valid") rows = rows.filter(function (r) { return !r.deleted && r.quality && r.quality.valid === 1; });
-  if (f.status === "flagged") {
-    rows = rows.filter(function (r) {
-      if (r.deleted) return false;
-      var q = r.quality || {};
-      return q.valid !== 1 || q.attention_fail === 1 || q.speeder === 1 || q.straightline_flag === 1 || !!r.flag_inconsistent;
-    });
-  }
-  if (f.source) rows = rows.filter(function (r) { return r.source === f.source; });
-  if (f.A1) rows = rows.filter(function (r) { return String((r.answers || {}).A1) === String(f.A1); });
-  if (f.A2) rows = rows.filter(function (r) { return String((r.answers || {}).A2) === String(f.A2); });
-  if (f.A11) rows = rows.filter(function (r) { return String((r.answers || {}).A11) === String(f.A11); });
-  if (f.q) {
-    var q = String(f.q).toLowerCase();
-    rows = rows.filter(function (r) { return String(r.form_code || "").toLowerCase().indexOf(q) >= 0; });
-  }
-  if (f.from) rows = rows.filter(function (r) { return String(r.server_time || "") >= f.from; });
-  if (f.to) rows = rows.filter(function (r) { return String(r.server_time || "").slice(0, 10) <= f.to; });
-
-  var sortKey = data.sortKey || "server_time";
-  var sortDir = data.sortDir === "asc" ? 1 : -1;
-  rows.sort(function (a, b) {
-    var av = a[sortKey] || "";
-    var bv = b[sortKey] || "";
-    if (av < bv) return -1 * sortDir;
-    if (av > bv) return 1 * sortDir;
-    return 0;
+  rows = rows.filter(r => {
+    const del = Number(r.deleted) === 1;
+    if (status === 'deleted') { if (!del) return false; }
+    else if (del) return false;
+    if (status === 'valid' && Number(r.valid) !== 1) return false;
+    if (status === 'flagged' && !isFlagged_(r)) return false;
+    if (p.source && r.source !== p.source) return false;
+    if (p.enteredBy && r.entered_by !== p.enteredBy) return false;
+    if (p.from && String(r.server_time).slice(0, 10) < p.from) return false;
+    if (p.to && String(r.server_time).slice(0, 10) > p.to) return false;
+    if (q && (String(r.display_name).toLowerCase() + ' ' + String(r.form_code).toLowerCase()).indexOf(q) === -1) return false;
+    return true;
   });
 
-  var active = all.filter(function (r) { return !r.deleted; });
-  var valid = active.filter(function (r) { return r.quality && r.quality.valid === 1; }).length;
-  var flagged = active.filter(function (r) {
-    var q = r.quality || {};
-    return q.valid !== 1 || q.attention_fail === 1 || q.speeder === 1 || q.straightline_flag === 1 || !!r.flag_inconsistent;
-  }).length;
-  var today = Utilities.formatDate(new Date(), "Asia/Ho_Chi_Minh", "yyyy-MM-dd");
-  var todayCount = active.filter(function (r) { return String(r.server_time || "").slice(0, 10) === today; }).length;
+  rows.sort((a, b) => (Number(a.seq) - Number(b.seq)) * sortDir);
 
-  var pageSize = data.pageSize || 20;
-  var page = Math.max(1, data.page || 1);
-  var start = (page - 1) * pageSize;
+  const total = rows.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const items = rows.slice((page - 1) * pageSize, page * pageSize).map(summary_);
 
-  return {
-    ok: true,
-    total: rows.length,
-    page: page,
-    pageSize: pageSize,
-    rows: rows.slice(start, start + pageSize),
-    stats: { totalAll: active.length, valid: valid, flagged: flagged, today: todayCount },
-  };
+  return { items: items, total: total, page: page, pageSize: pageSize, pageCount: pageCount, lastUpdated: now_() };
 }
 
-function get_(data) {
-  var rec = findPayload_(data.form_code);
-  if (!rec) return { ok: false, error: "Không tìm thấy phiếu" };
-  return { ok: true, row: rec };
-}
-
-function update_(data) {
-  var old = findPayload_(data.form_code);
-  if (!old) return { ok: false, error: "Không tìm thấy phiếu" };
-  var payload = data.payload || {};
-  var changes = diffAnswers_(old.answers || {}, payload.answers || {});
-  var updated = Object.assign({}, old, payload, {
-    form_code: old.form_code,
-    source: old.source,
-    server_time: old.server_time,
-    edited: 1,
-    deleted: old.deleted || 0,
-    delete_reason: old.delete_reason || "",
-  });
-  savePayload_(old.form_code, updated);
-  rewriteFlatRow_(updated);
-  appendAudit_({
-    time: new Date().toISOString(),
-    form_code: old.form_code,
-    action: "update",
-    reason: data.edit_reason || payload.edit_reason || "",
-    changes: changes,
-  });
-  return { ok: true, form_code: old.form_code };
-}
-
-function softDelete_(data) {
-  var old = findPayload_(data.form_code);
-  if (!old) return { ok: false, error: "Không tìm thấy" };
-  old.deleted = 1;
-  old.delete_reason = data.reason || "";
-  savePayload_(old.form_code, old);
-  rewriteFlatRow_(old);
-  appendAudit_({
-    time: new Date().toISOString(),
-    form_code: data.form_code,
-    action: "softDelete",
-    reason: data.reason || "",
-    changes: "",
-  });
-  return { ok: true };
-}
-
-function restore_(data) {
-  var old = findPayload_(data.form_code);
-  if (!old) return { ok: false, error: "Không tìm thấy" };
-  old.deleted = 0;
-  old.delete_reason = "";
-  savePayload_(old.form_code, old);
-  rewriteFlatRow_(old);
-  appendAudit_({
-    time: new Date().toISOString(),
-    form_code: data.form_code,
-    action: "restore",
-    reason: "",
-    changes: "",
-  });
-  return { ok: true };
-}
-
-function export_(data) {
-  return { ok: true, rows: loadAllPayloads_(), audit: loadAudit_() };
-}
-
-function nextFormCode_(source) {
-  var meta = getSheet_(SHEET_META);
-  if (meta.getLastRow() === 0) meta.appendRow(["key", "value"]);
-  var key = source === "paper" ? "seq_paper" : "seq_online";
-  var prefix = source === "paper" ? "PKG-" : "PKS-";
-  var values = meta.getDataRange().getValues();
-  var rowIdx = -1;
-  var seq = 0;
-  for (var i = 1; i < values.length; i++) {
-    if (values[i][0] === key) {
-      rowIdx = i + 1;
-      seq = Number(values[i][1] || 0);
-      break;
-    }
-  }
-  seq += 1;
-  if (rowIdx > 0) meta.getRange(rowIdx, 2).setValue(seq);
-  else meta.appendRow([key, seq]);
-  return prefix + ("0000" + seq).slice(-4);
-}
-
-function getSheet_(name) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
-  return sheet;
-}
-
-function ensureHeader_(sheet, headers) {
-  if (sheet.getLastRow() === 0) sheet.appendRow(headers);
-}
-
-function colIndex_(headers, name) {
-  var i = headers.indexOf(name);
-  return i >= 0 ? i + 1 : 1;
-}
-
-function payloadSheet_() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName("payloads");
-  if (!sh) {
-    sh = ss.insertSheet("payloads");
-    sh.appendRow(["form_code", "json"]);
-  }
-  return sh;
-}
-
-function savePayload_(form_code, data) {
-  var sh = payloadSheet_();
-  var values = sh.getDataRange().getValues();
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][0]) === String(form_code)) {
-      sh.getRange(i + 1, 2).setValue(JSON.stringify(data));
-      return;
-    }
-  }
-  sh.appendRow([form_code, JSON.stringify(data)]);
-}
-
-function findPayload_(form_code) {
-  var sh = payloadSheet_();
-  var values = sh.getDataRange().getValues();
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][0]) === String(form_code)) {
-      return JSON.parse(values[i][1]);
-    }
-  }
-  return null;
-}
-
-function loadAllPayloads_() {
-  var sh = payloadSheet_();
-  var values = sh.getDataRange().getValues();
-  var out = [];
-  for (var i = 1; i < values.length; i++) {
-    if (!values[i][1]) continue;
-    try {
-      out.push(JSON.parse(values[i][1]));
-    } catch (e) {}
-  }
+function get_(formCode) {
+  const r = findRow_(formCode);
+  if (!r) throw new Error('NOT_FOUND');
+  const out = {};
+  SYS_COLS.forEach(c => { if (c !== 'answers_json') out[c] = r.obj[c]; });
+  out.answers = parseAnswers_(r.obj.answers_json);
   return out;
 }
 
-function rewriteFlatRow_(rec) {
-  var sheet = getSheet_(SHEET_RESPONSES);
-  var headers = getHeaders_();
-  ensureHeader_(sheet, headers);
-  var encoded = encodeRowApps_(rec);
-  var last = sheet.getLastRow();
-  var codeCol = colIndex_(headers, "form_code");
-  if (last < 2) {
-    sheet.appendRow(headers.map(function (h) { return encoded[h] == null ? "" : encoded[h]; }));
-    return;
-  }
-  var codes = sheet.getRange(2, codeCol, last - 1, 1).getValues();
-  for (var i = 0; i < codes.length; i++) {
-    if (String(codes[i][0]) === String(rec.form_code)) {
-      var row = headers.map(function (h) { return encoded[h] == null ? "" : encoded[h]; });
-      sheet.getRange(i + 2, 1, 1, headers.length).setValues([row]);
-      return;
+/**
+ * p = { form_code, answers, reason, by, expected_updated_at }
+ * expected_updated_at: giá trị updated_at client đang giữ; khác server → báo CONFLICT.
+ */
+function update_(p) {
+  if (!p.reason) throw new Error('MISSING_REASON');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const r = findRow_(p.form_code);
+    if (!r) throw new Error('NOT_FOUND');
+    if (p.expected_updated_at !== undefined && String(p.expected_updated_at) !== String(r.obj.updated_at || '')) {
+      return { conflict: true, updated_at: r.obj.updated_at, updated_by: r.obj.updated_by };
     }
-  }
-  sheet.appendRow(headers.map(function (h) { return encoded[h] == null ? "" : encoded[h]; }));
-}
 
-function appendAudit_(row) {
-  var sh = getSheet_(SHEET_AUDIT);
-  if (sh.getLastRow() === 0) sh.appendRow(["time", "form_code", "action", "reason", "changes"]);
-  sh.appendRow([row.time, row.form_code, row.action, row.reason, row.changes]);
-}
+    const sh = sheet_(SHEET_RESPONSES);
+    const oldAns = parseAnswers_(r.obj.answers_json);
+    const newAns = p.answers || {};
+    const keys = uniq_(Object.keys(oldAns).concat(Object.keys(newAns)));
+    const t = now_();
+    const by = String(p.by || '');
 
-function loadAudit_() {
-  var sh = getSheet_(SHEET_AUDIT);
-  if (sh.getLastRow() < 2) return [];
-  var values = sh.getDataRange().getValues();
-  var out = [];
-  for (var i = 1; i < values.length; i++) {
-    out.push({
-      time: values[i][0],
-      form_code: values[i][1],
-      action: values[i][2],
-      reason: values[i][3],
-      changes: values[i][4],
+    const audit = [];
+    keys.forEach(k => {
+      const o = cellValue_(oldAns[k]);
+      const n = cellValue_(newAns[k]);
+      if (String(o) !== String(n)) audit.push([t, p.form_code, 'update', k, o, n, p.reason, by]);
     });
+    if (!audit.length) return { changed: 0, updated_at: r.obj.updated_at };
+
+    const headers = ensureAnswerColumns_(sh, Object.keys(newAns));
+    const merged = Object.assign({}, r.obj, { updated_at: t, updated_by: by, edited: 1, answers_json: JSON.stringify(newAns) });
+    if (p.valid !== undefined) merged.valid = Number(p.valid);
+    if (p.flags !== undefined) merged.flags = String(p.flags);
+    if (p.paper_date !== undefined) merged.paper_date = String(p.paper_date);
+
+    const rowVals = headers.map(h => cellValue_(SYS_COLS.indexOf(h) >= 0 ? merged[h] : newAns[h]));
+    sh.getRange(r.rowIndex, 1, 1, rowVals.length).setValues([rowVals]);
+
+    const ash = sheet_(SHEET_AUDIT);
+    ash.getRange(ash.getLastRow() + 1, 1, audit.length, AUDIT_COLS.length).setValues(audit);
+    return { changed: audit.length, updated_at: t };
+  } finally {
+    lock.releaseLock();
   }
-  return out.reverse();
 }
 
-function diffAnswers_(a, b) {
-  var keys = {};
-  Object.keys(a).forEach(function (k) { keys[k] = 1; });
-  Object.keys(b).forEach(function (k) { keys[k] = 1; });
-  var parts = [];
-  Object.keys(keys).forEach(function (k) {
-    var ov = JSON.stringify(a[k] == null ? "" : a[k]);
-    var nv = JSON.stringify(b[k] == null ? "" : b[k]);
-    if (ov !== nv) parts.push(k + ": " + ov + " → " + nv);
-  });
-  return parts.join(" | ");
-}
-
-function getHeaders_() {
-  return [
-    "form_code", "source", "respondent_id", "server_time", "start_time", "end_time", "duration_sec",
-    "consent", "S0",
-    "A1", "A2", "A3", "A4", "A5", "A6", "A7",
-    "A8_1", "A8_2", "A8_3", "A8_4", "A8_5", "A8_6", "A8_7",
-    "A9", "A10", "A11", "A12", "skip_B",
-    "B1_1", "B1_2", "B1_3", "B1_4", "B1_5", "B1_6", "B1_7",
-    "B2_1", "B2_2", "B2_3", "B2_4", "B2_5", "B2_6",
-    "TL1", "TL2", "TL3", "TL4", "TL5", "TL6", "TL7", "TL8", "TL9", "TL10", "TL11", "TL12", "TL13", "TL14", "TL15",
-    "TC1", "TC2", "TC3", "TC4", "TC5", "TC6", "TC7", "TC8", "TC9",
-    "HT1", "HT2", "HT3", "HT4", "HT5", "HT6", "ATT1", "HT7", "HT8", "HT9", "HT10", "HT11",
-    "MS1", "MS2", "MS3", "MS4",
-    "FSIS1", "FSIS2", "FSIS3", "FSIS4",
-    "SI1", "SI2", "SI3", "SI4",
-    "skip_C5", "DB1", "DB2", "DB3", "DB4", "DB5",
-    "C6_1", "C6_2", "C6_3", "C6_4", "C6_5", "C6_6", "C6_7", "C6_8",
-    "D1", "D2_1", "D2_2", "D2_3", "D2_4", "D2_5", "D2_6",
-    "skip_D", "D3", "D4", "D5_1", "D5_2", "D5_3", "D5_4", "D5_5", "D6",
-    "VM1", "VM2", "VM3", "VM4", "VM5", "VM6", "VM7", "VM8", "VM9", "VM10",
-    "E2", "F1",
-    "KT1", "KT2", "KT3", "KT4", "KT5", "KT6",
-    "TD1", "TD2", "TD3", "TD4", "TD5",
-    "G1_1", "G1_2", "G1_3", "G1_4", "G1_5", "G1_6", "G1_7", "G1_8",
-    "G2", "NEO1", "NEO2", "NEO3",
-    "G3_1", "G3_2", "G3_3", "G3_4", "G3_5", "G3_6",
-    "SS1", "SS2", "SS3", "SS4", "SS5",
-    "G5_1", "G5_2", "G5_3", "G5_4", "G5_5", "G5_6", "G5_other",
-    "GP1", "GP2", "GP3", "GP4", "GP5", "GP6", "GP7", "GP8", "GP9", "GP10",
-    "GP11", "GP12", "GP13", "GP14", "GP15", "GP16", "GP17", "GP18", "GP19", "GP20", "GP21",
-    "I1", "I2", "I3", "I4",
-    "attention_fail", "straightline_max", "straightline_flag", "speeder",
-    "honeypot_flag", "flag_inconsistent", "valid", "edited", "deleted", "delete_reason",
-    "device", "screen_w", "page_times"
-  ];
-}
-
-function encodeRowApps_(record) {
-  var answers = record.answers || {};
-  var quality = record.quality || {};
-  var row = {};
-  getHeaders_().forEach(function (c) { row[c] = ""; });
-  row.form_code = record.form_code || "";
-  row.source = record.source || "online";
-  row.respondent_id = record.respondent_id || "";
-  row.server_time = record.server_time || "";
-  row.start_time = record.start_time || "";
-  row.end_time = record.end_time || "";
-  row.duration_sec = record.duration_sec != null ? record.duration_sec : "";
-  row.consent = answers.consent === 1 ? 1 : 0;
-  row.S0 = answers.S0 != null ? answers.S0 : "";
-  ["A1","A2","A3","A4","A5","A6","A7","A9","A10","A11","A12","D1","D3","D4","D6","E2","F1","G2"].forEach(function (k) {
-    if (answers[k] !== undefined && answers[k] !== null && answers[k] !== "") row[k] = answers[k];
-  });
-  expandMulti_(row, answers, "A8", 7);
-  expandMulti_(row, answers, "B2", 6);
-  expandMulti_(row, answers, "C6", 8);
-  expandMulti_(row, answers, "D2", 6);
-  expandMulti_(row, answers, "D5", 5);
-  expandMulti_(row, answers, "G1", 8);
-  expandMulti_(row, answers, "G3", 6);
-  expandMulti_(row, answers, "G5", 6);
-  if (quality.skip_B === 1) {
-    for (var i = 1; i <= 7; i++) row["B1_" + i] = "";
-    for (var j = 1; j <= 6; j++) row["B2_" + j] = "";
-  } else {
-    for (var b = 1; b <= 7; b++) row["B1_" + b] = answers["B1_" + b] != null ? answers["B1_" + b] : "";
+function setDeleted_(p, flag) {
+  if (flag === 1 && !p.reason) throw new Error('MISSING_REASON');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const r = findRow_(p.form_code);
+    if (!r) throw new Error('NOT_FOUND');
+    const sh = sheet_(SHEET_RESPONSES);
+    const headers = headers_(sh);
+    const t = now_();
+    setCell_(sh, r.rowIndex, headers, 'deleted', flag);
+    setCell_(sh, r.rowIndex, headers, 'delete_reason', flag ? String(p.reason) : '');
+    setCell_(sh, r.rowIndex, headers, 'updated_at', t);
+    setCell_(sh, r.rowIndex, headers, 'updated_by', String(p.by || ''));
+    sheet_(SHEET_AUDIT).appendRow([t, p.form_code, flag ? 'delete' : 'restore', '', '', '', String(p.reason || ''), String(p.by || '')]);
+    return { form_code: p.form_code, deleted: flag, updated_at: t };
+  } finally {
+    lock.releaseLock();
   }
-  Object.keys(answers).forEach(function (k) {
-    if (row.hasOwnProperty(k) && answers[k] !== undefined && answers[k] !== null && answers[k] !== "" && typeof answers[k] !== "object") {
-      row[k] = answers[k];
-    }
+}
+
+function stats_() {
+  const rows = readAll_(SHEET_RESPONSES).rows;
+  const today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  const active = rows.filter(r => Number(r.deleted) !== 1);
+  const byEditor = {};
+  active.forEach(r => {
+    const k = r.entered_by || (r.source === 'online' ? 'Online' : 'Không rõ');
+    byEditor[k] = (byEditor[k] || 0) + 1;
   });
-  if (quality.skip_C5 === 1) for (var d = 1; d <= 5; d++) row["DB" + d] = "";
-  if (quality.skip_D === 1) {
-    row.D3 = ""; row.D4 = ""; row.D6 = "";
-    for (var x = 1; x <= 5; x++) row["D5_" + x] = x === 5 ? 1 : 0;
+  return {
+    total: active.length,
+    valid: active.filter(r => Number(r.valid) === 1).length,
+    flagged: active.filter(isFlagged_).length,
+    today: active.filter(r => String(r.server_time).slice(0, 10) === today).length,
+    deleted: rows.length - active.length,
+    byEditor: byEditor,
+    lastSeq: currentSeq_(),
+    lastUpdated: now_()
+  };
+}
+
+function exportAll_() {
+  return readAll_(SHEET_RESPONSES).rows.map(r => {
+    const out = {};
+    SYS_COLS.forEach(c => { if (c !== 'answers_json') out[c] = r[c]; });
+    out.answers = parseAnswers_(r.answers_json);
+    return out;
+  });
+}
+
+/* ========================= TIỆN ÍCH ========================= */
+
+function sheet_(name) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sh) throw new Error('Chưa có sheet "' + name + '". Hãy chạy hàm setup trước.');
+  return sh;
+}
+
+function headers_(sh) {
+  const lastCol = sh.getLastColumn();
+  return lastCol ? sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
+}
+
+function ensureAnswerColumns_(sh, keys) {
+  const headers = headers_(sh);
+  const missing = keys.filter(k => headers.indexOf(k) === -1 && SYS_COLS.indexOf(k) === -1);
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]).setFontWeight('bold');
+    return headers.concat(missing);
   }
-  row.skip_B = quality.skip_B != null ? quality.skip_B : "";
-  row.skip_C5 = quality.skip_C5 != null ? quality.skip_C5 : "";
-  row.skip_D = quality.skip_D != null ? quality.skip_D : "";
-  row.G5_other = clean_(answers.G5_other);
-  row.I1 = clean_(answers.I1); row.I2 = clean_(answers.I2); row.I3 = clean_(answers.I3); row.I4 = clean_(answers.I4);
-  row.attention_fail = quality.attention_fail != null ? quality.attention_fail : "";
-  row.straightline_max = quality.straightline_max != null ? quality.straightline_max : "";
-  row.straightline_flag = quality.straightline_flag != null ? quality.straightline_flag : "";
-  row.speeder = quality.speeder != null ? quality.speeder : "";
-  row.honeypot_flag = quality.honeypot_flag != null ? quality.honeypot_flag : "";
-  row.flag_inconsistent = record.flag_inconsistent || "";
-  row.valid = quality.valid != null ? quality.valid : "";
-  row.edited = record.edited ? 1 : 0;
-  row.deleted = record.deleted ? 1 : 0;
-  row.delete_reason = record.delete_reason || "";
-  row.device = record.device || "";
-  row.screen_w = record.screen_w != null ? record.screen_w : "";
-  row.page_times = typeof record.page_times === "string" ? record.page_times : JSON.stringify(record.page_times || {});
-  return row;
+  return headers;
 }
 
-function expandMulti_(row, answers, qid, n) {
-  var sel = answers[qid];
-  if (!Array.isArray(sel)) sel = [];
-  for (var i = 1; i <= n; i++) row[qid + "_" + i] = sel.indexOf(i) >= 0 ? 1 : 0;
+function readAll_(name) {
+  const sh = sheet_(name);
+  const values = sh.getDataRange().getValues();
+  const headers = (values.shift() || []).map(String);
+  const rows = values.map(v => {
+    const o = {};
+    headers.forEach((h, i) => { o[h] = v[i] instanceof Date ? Utilities.formatDate(v[i], TZ, "yyyy-MM-dd'T'HH:mm:ss") : v[i]; });
+    return o;
+  });
+  return { headers: headers, rows: rows };
 }
 
-function clean_(s) {
-  return String(s == null ? "" : s).replace(/[\r\n]+/g, " ").replace(/,/g, " ").trim();
+function findRow_(formCode) {
+  if (!formCode) return null;
+  const data = readAll_(SHEET_RESPONSES);
+  const idx = data.rows.findIndex(r => r.form_code === formCode);
+  return idx === -1 ? null : { rowIndex: idx + 2, obj: data.rows[idx] };
 }
 
+function setCell_(sh, row, headers, col, val) {
+  const c = headers.indexOf(col);
+  if (c >= 0) sh.getRange(row, c + 1).setValue(val);
+}
+
+function summary_(r) {
+  const o = {
+    seq: r.seq, form_code: r.form_code, display_name: r.display_name, source: r.source,
+    entered_by: r.entered_by, paper_date: r.paper_date, server_time: r.server_time,
+    updated_at: r.updated_at, duration_sec: r.duration_sec, valid: r.valid, flags: r.flags,
+    edited: r.edited, deleted: r.deleted, delete_reason: r.delete_reason
+  };
+  LIST_ANSWER_FIELDS.forEach(f => { o[f] = r[f]; });
+  return o;
+}
+
+function nextSeq_() {
+  const meta = sheet_(SHEET_META);
+  const cell = meta.getRange(2, 2);
+  const next = (Number(cell.getValue()) || 0) + 1;
+  cell.setValue(next);
+  return next;
+}
+
+function currentSeq_() {
+  return Number(sheet_(SHEET_META).getRange(2, 2).getValue()) || 0;
+}
+
+function parseAnswers_(s) {
+  try { return JSON.parse(s || '{}'); } catch (e) { return {}; }
+}
+
+function cellValue_(v) {
+  if (v === undefined || v === null) return '';
+  if (Array.isArray(v)) return v.join(';');      // câu chọn nhiều: "1;3"
+  if (typeof v === 'object') return JSON.stringify(v);
+  return v;
+}
+
+function isFlagged_(r) { return (r.valid !== '' && Number(r.valid) === 0) || String(r.flags || '') !== ''; }
+function uniq_(arr) { return arr.filter((x, i) => arr.indexOf(x) === i); }
+function pad_(n, w) { return String(n).padStart(w, '0'); }
+function now_() { return Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd'T'HH:mm:ss"); }
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }

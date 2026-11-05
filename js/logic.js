@@ -1,6 +1,12 @@
 /* Bước nhảy, ràng buộc chọn đáp án, kiểm tra nhất quán, chất lượng dữ liệu */
 
 const Logic = (function () {
+  /* Chế độ nhập phiếu giấy: ẩn câu kiểm tra chú ý (ATT1) và trang mở đầu (đồng ý + sàng lọc),
+     không gắn cờ 'làm quá nhanh' vì người nhập liệu gõ nhanh là bình thường. */
+  let paperMode = false;
+  function setPaperMode(v) { paperMode = !!v; }
+  function isPaperMode() { return paperMode; }
+
   function isVisibleCondition(cond, answers) {
     if (!cond) return true;
     const val = answers[cond.question];
@@ -23,6 +29,7 @@ const Logic = (function () {
   }
 
   function isPageVisible(page, answers) {
+    if (paperMode && page.id === "intro") return false;
     return isVisibleCondition(page.showIf, answers);
   }
 
@@ -34,7 +41,10 @@ const Logic = (function () {
     if (!q || q.type !== "likert_group") return [];
     const items = [];
     (q.blocks || []).forEach((b) => {
-      (b.items || []).forEach((it) => items.push(it));
+      (b.items || []).forEach((it) => {
+        if (paperMode && it.attention) return;
+        items.push(it);
+      });
     });
     return items;
   }
@@ -304,7 +314,7 @@ const Logic = (function () {
     const straightline_flag = straightline_max >= 2 ? 1 : 0;
 
     const duration_sec = meta.duration_sec || 0;
-    const speeder = duration_sec > 0 && duration_sec < (meta.speederSec || 240) ? 1 : 0;
+    const speeder = !paperMode && duration_sec > 0 && duration_sec < (meta.speederSec || 240) ? 1 : 0;
     const honeypot_flag = meta.honeypot ? 1 : 0;
     const screened_out = answers.S0 === 2 ? 1 : 0;
 
@@ -338,6 +348,8 @@ const Logic = (function () {
     isPageVisible,
     visiblePages,
     getLikertItems,
+    setPaperMode,
+    isPaperMode,
     clearDependentAnswers,
     applyMultiConstraints,
     optionDisabled,
@@ -347,6 +359,6 @@ const Logic = (function () {
     computeQuality,
   };
 })();
-window.Logic = Logic;
 
 if (typeof module !== "undefined") module.exports = { Logic };
+window.Logic = Logic;

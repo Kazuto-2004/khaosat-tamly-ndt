@@ -15,7 +15,6 @@ const App = (function () {
   let answers = {};
   let pageIndex = 0;
   let startTime = null;
-  let startMs = null;
   let pageEnterAt = null;
   let pageTimes = {};
   let respondentId = null;
@@ -88,7 +87,7 @@ const App = (function () {
   }
   function vnIso(d) {
     const date = d instanceof Date ? d : new Date(d);
-    return new Date(date.getTime() + 7 * 60000).toISOString().replace("Z", "+07:00");
+    return new Date(date.getTime() + 7 * 3600000).toISOString().replace(/\.\d{3}Z$/, "+07:00");
   }
   function displayNameFromSeq(n) {
     const s = String(n);
@@ -687,7 +686,8 @@ const App = (function () {
     if (mode === "paper" && pageIndex === 0 && !paperCollectedAt) {
       const r = await showFormDialog("Ngày thu phiếu giấy", [{ id: "date", label: "Ngày thu phiếu", type: "date", required: true, value: new Date().toISOString().slice(0, 10) }]);
       if (!r) return;
-      paperCollectedAt = paperDateYmd(r.date);
+      paperCollectedAt = r.date;
+      saveProgress();
     }
     const page = currentPage();
     if (!page) return;
@@ -751,22 +751,6 @@ const App = (function () {
     const p = (n) => String(n).padStart(2, "0");
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
   }
-  /** Google Sheets thường trả ngày dạng "2026-11-05T00:00:00" → chỉ lấy yyyy-mm-dd */
-  function paperDateYmd(v) {
-    if (v == null || v === "") return "";
-    const s = String(v);
-    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-    const d = new Date(s);
-    if (!isNaN(d)) {
-      const p = (n) => String(n).padStart(2, "0");
-      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
-    }
-    return s.slice(0, 10);
-  }
-  function elapsedSec() {
-    if (startMs == null) return 0;
-    return Math.max(0, Math.round((Date.now() - startMs) / 1000));
-  }
 
   function buildFlags(quality, screened) {
     const parts = [];
@@ -781,7 +765,8 @@ const App = (function () {
 
   function buildCreateBody(screened) {
     const end = new Date();
-    const duration_sec = elapsedSec();
+    const start = startTime ? new Date(startTime) : end;
+    const duration_sec = Math.max(0, Math.round((end - start) / 1000));
     const honeypot = (document.getElementById("website_url") || {}).value || "";
     const quality = Logic.computeQuality(answers, { duration_sec, speederSec: CONFIG.SPEEDER_SEC, honeypot: !!String(honeypot).trim() });
     if (screened) {
@@ -792,7 +777,7 @@ const App = (function () {
     const body = {
       answers: Object.assign({}, answers),
       client_uuid: clientUuid || uid(),
-      start_time: startTime || vnIso(new Date(startMs || Date.now())),
+      start_time: vnIso(start),
       end_time: vnIso(end),
       duration_sec,
       valid: quality.valid,
@@ -802,7 +787,7 @@ const App = (function () {
     };
     if (!publicMode) {
       body.entered_by = session.name || "";
-      body.paper_date = paperDateYmd(paperCollectedAt) || todayYmd();
+      body.paper_date = paperCollectedAt || todayYmd();
     }
     return body;
   }
@@ -866,8 +851,9 @@ const App = (function () {
     if (mode === "edit") {
       const session = Api.getSession() || {};
       const honeypot = (document.getElementById("website_url") || {}).value || "";
-      const duration_sec =
-        viewingRec && viewingRec.duration_sec != null ? Number(viewingRec.duration_sec) || 0 : elapsedSec();
+      const end = new Date();
+      const start = startTime ? new Date(startTime) : end;
+      const duration_sec = Math.max(0, Math.round((end - start) / 1000));
       const quality = Logic.computeQuality(answers, { duration_sec, speederSec: CONFIG.SPEEDER_SEC, honeypot: !!String(honeypot).trim() });
       const data = await Api.api("update", {
         form_code: editFormCode,
@@ -877,8 +863,7 @@ const App = (function () {
         expected_updated_at: expectedUpdatedAt || (viewingRec && viewingRec.updated_at) || "",
         valid: quality.valid,
         flags: buildFlags(quality, false),
-        paper_date: paperDateYmd(paperCollectedAt || (viewingRec && viewingRec.paper_date) || ""),
-        duration_sec,
+        paper_date: paperCollectedAt || (viewingRec && viewingRec.paper_date ? String(viewingRec.paper_date).slice(0, 10) : ""),
       });
       if (data && data.conflict) {
         const choice = await showDialog(
@@ -969,9 +954,13 @@ const App = (function () {
   function resetState(opts) {
     opts = opts || {};
     answers = opts.answers || {};
+    if (!publicMode) {
+      // phiếu giấy: người trả lời đã đồng ý và đạt sàng lọc khi điền giấy
+      if (answers.consent === undefined) answers.consent = 1;
+      if (answers.S0 === undefined) answers.S0 = 1;
+    }
     pageIndex = opts.pageIndex || 0;
-    startMs = opts.startMs != null ? opts.startMs : Date.now();
-    startTime = opts.startTime || vnIso(new Date(startMs));
+    startTime = opts.startTime || vnIso(new Date());
     pageTimes = opts.pageTimes || {};
     flagInconsistent = opts.flagInconsistent || [];
     screenedOut = false;
@@ -980,7 +969,7 @@ const App = (function () {
     editFormCode = opts.editFormCode || null;
     editReason = opts.editReason || "";
     expectedUpdatedAt = opts.expectedUpdatedAt || "";
-    paperCollectedAt = paperDateYmd(opts.paperCollectedAt != null ? opts.paperCollectedAt : todayYmd()) || todayYmd();
+    paperCollectedAt = opts.paperCollectedAt != null ? opts.paperCollectedAt : todayYmd();
     viewingRec = opts.viewingRec || null;
     viewAll = false;
     lastFormCode = null;
@@ -1018,7 +1007,7 @@ const App = (function () {
       respondentId: full.respondent_id || full.client_uuid,
       viewingRec: full,
       startTime: full.start_time || vnIso(new Date()),
-      paperCollectedAt: paperDateYmd(full.paper_date) || todayYmd(),
+      paperCollectedAt: full.paper_date ? String(full.paper_date).slice(0, 10) : todayYmd(),
       flagInconsistent: String(full.flags || full.flag_inconsistent || "")
         .split(";")
         .filter(Boolean),
@@ -1037,7 +1026,7 @@ const App = (function () {
       viewingRec: full,
       startTime: full.start_time || vnIso(new Date()),
       expectedUpdatedAt: full.updated_at || "",
-      paperCollectedAt: paperDateYmd(full.paper_date) || "",
+      paperCollectedAt: full.paper_date ? String(full.paper_date).slice(0, 10) : "",
     });
     finished = false;
     render();
@@ -1237,11 +1226,11 @@ const App = (function () {
     input.type = "date";
     input.id = "paper-date-input";
     input.required = true;
-    input.value = paperDateYmd(paperCollectedAt) || todayYmd();
+    input.value = paperCollectedAt || todayYmd();
     input.disabled = mode === "view";
     input.addEventListener("change", () => {
-      paperCollectedAt = paperDateYmd(input.value);
-      keepPaperDate = paperCollectedAt;
+      paperCollectedAt = input.value;
+      keepPaperDate = input.value;
     });
     wrap.appendChild(input);
     root.appendChild(wrap);
@@ -1249,6 +1238,7 @@ const App = (function () {
 
   async function boot() {
     setupPublicMode();
+    Logic.setPaperMode(!publicMode);
     document.getElementById("footer-ver").textContent = CONFIG.SURVEY_VERSION;
     Api.setUnauthorizedHandler(() => {
       ensureLogin(true).then(() => {
@@ -1287,13 +1277,11 @@ const App = (function () {
     escapeHtml,
     isPublicMode,
     renderPaperDate,
-    paperDateYmd,
     isModalOpen: () => !!document.querySelector(".dialog-overlay"),
     getSessionName: () => (Api.getSession() && Api.getSession().name) || "",
     CONFIG,
   };
 })();
-window.App = App;
 
 document.addEventListener("DOMContentLoaded", () => App.boot());
-
+window.App = App;

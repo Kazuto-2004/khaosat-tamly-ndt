@@ -617,18 +617,38 @@ const Manager = (function () {
   }
 
   async function runBatchOneDoc(rows) {
-    App.toast("Đang tạo file Word gộp…");
-    /* ghép từng phiếu bằng downloadMany nội dung – dùng WordExport.buildBlob lần lượt qua JSZip 1 file: đơn giản tải ZIP; gộp 1 docx: nối children */
-    if (!window.docx) throw new Error("Thiếu thư viện docx");
-    const { Document, Packer, Paragraph, TextRun, PageBreak } = window.docx;
-    const children = [];
-    for (let i = 0; i < rows.length; i++) {
-      const blob = await WordExport.buildBlob(rows[i]);
-      /* Không merge blob dễ dàng – fallback: tải ZIP */
-      void blob;
+    const host = document.getElementById("modal-host");
+    const overlay = document.createElement("div");
+    overlay.className = "dialog-overlay";
+    overlay.innerHTML =
+      '<div class="dialog progress-modal"><h3>Đang gộp phiếu vào 1 file Word…</h3><div class="bar"><span id="zip-bar"></span></div><p id="zip-text">0/' +
+      rows.length +
+      '</p><button type="button" class="btn outline" id="zip-cancel">Hủy</button></div>';
+    host.appendChild(overlay);
+    const ctrl = { aborted: false };
+    document.getElementById("zip-cancel").addEventListener("click", () => {
+      ctrl.aborted = true;
+      overlay.remove();
+    });
+    try {
+      await WordExport.downloadMerged(
+        rows,
+        (cur, total) => {
+          const bar = document.getElementById("zip-bar");
+          const text = document.getElementById("zip-text");
+          if (bar) bar.style.width = Math.round((cur / total) * 100) + "%";
+          if (text) text.textContent = "Đang tạo " + cur + "/" + total + "…";
+        },
+        ctrl
+      );
+      overlay.remove();
+      App.toast("Đã tải file Word gộp " + rows.length + " phiếu");
+    } catch (e) {
+      overlay.remove();
+      if (!ctrl.aborted) App.toast(e.message || "Lỗi tạo file Word gộp");
     }
-    await runBatchZip(rows);
   }
+
 
   function stamp(kind) {
     const d = new Date();

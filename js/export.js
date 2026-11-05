@@ -322,6 +322,6 @@ const ExportUtil = (function () {
     MULTI_EXPAND,
   };
 })();
-window.ExportUtil = ExportUtil;
 
 if (typeof module !== "undefined") module.exports = { ExportUtil };
+window.ExportUtil = ExportUtil;
