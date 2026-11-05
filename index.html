@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Phiếu khảo sát Tâm lý NĐT & Rủi ro sụp đổ giá CP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+  <script src="https://unpkg.com/docx@8.5.0/build/index.umd.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="header-brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M7 3.5h7.5L19 8v12.5a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M14.5 3.5V8H19" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M9 12h6M9 15.5h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title">Phiếu khảo sát Tâm lý NĐT &amp; Rủi ro sụp đổ giá CP</div>
+          <div class="brand-sub">Nghiên cứu TTCK Việt Nam</div>
+        </div>
+      </div>
+      <div class="header-right" id="header-right">
+        <span class="chip-count" id="header-count">Đã thu: <strong>0</strong> phiếu</span>
+        <button type="button" class="btn outline sm" id="btn-goto-block2">Xem danh sách ↓</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="container">
+      <!-- KHỐI 1 -->
+      <section class="card block1" id="block1">
+        <div class="status-strip" id="status-strip" data-mode="new">
+          <div class="status-left" id="status-left">Phiếu mới · sẽ lưu thành <strong>Phiếu số 001</strong></div>
+          <div class="status-right" id="status-right"></div>
+        </div>
+
+        <div class="step-wrap">
+          <div class="step-bar" id="step-bar"></div>
+          <div class="step-meta" id="step-meta">Phần A · 1/9</div>
+        </div>
+
+        <div class="block1-body" id="survey-scroll">
+          <div id="mode-banner" class="mode-banner" hidden></div>
+          <div id="app"></div>
+          <label class="hp" for="website_url">Website</label>
+          <input class="hp" id="website_url" name="website_url" tabindex="-1" autocomplete="off" />
+          <div id="aria-live" class="sr-only" aria-live="assertive"></div>
+        </div>
+
+        <div class="block1-nav" id="nav-bar">
+          <button type="button" class="btn outline" id="btn-back">← Quay lại</button>
+          <button type="button" class="btn primary" id="btn-next">Tiếp tục →</button>
+        </div>
+      </section>
+
+      <!-- KHỐI 2 -->
+      <section class="card block2" id="block2">
+        <div class="block2-head">
+          <div>
+            <h2 class="block-title">Danh sách phiếu đã làm</h2>
+            <p class="block-sub" id="mgr-updated">Cập nhật lúc —</p>
+          </div>
+          <button type="button" class="btn ghost sm" id="mgr-refresh" title="Làm mới">⟳</button>
+        </div>
+
+        <div class="stat-cards" id="mgr-stats"></div>
+        <div class="target-bar">
+          <div class="target-label" id="mgr-target-label">0 / 1000 phiếu</div>
+          <div class="progress-track"><div id="mgr-target-bar"></div></div>
+        </div>
+
+        <div class="mgr-toolbar">
+          <div class="toolbar-left">
+            <input type="search" id="mgr-q" placeholder="Tìm tên / mã phiếu…" />
+            <select id="mgr-status">
+              <option value="all">Trạng thái</option>
+              <option value="valid">Hợp lệ</option>
+              <option value="flagged">Gắn cờ</option>
+              <option value="deleted">Đã xóa</option>
+            </select>
+            <select id="mgr-source">
+              <option value="">Nguồn</option>
+              <option value="online">Online</option>
+              <option value="paper">Nhập từ giấy</option>
+            </select>
+            <select id="mgr-editor">
+              <option value="">Người nhập</option>
+            </select>
+            <input type="date" id="mgr-from" title="Từ ngày" />
+            <input type="date" id="mgr-to" title="Đến ngày" />
+            <button type="button" class="btn ghost sm" id="mgr-clear">Xóa lọc</button>
+          </div>
+          <div class="toolbar-right">
+            <button type="button" class="btn primary sm" id="mgr-add">+ Thêm phiếu</button>
+            <button type="button" class="btn outline sm" id="mgr-dl-selected" disabled>Tải Word phiếu đã chọn</button>
+            <div class="menu-wrap">
+              <button type="button" class="btn outline sm" id="mgr-batch">Tải 50 phiếu ▾</button>
+              <div class="menu" id="mgr-batch-menu" hidden></div>
+            </div>
+            <div class="menu-wrap">
+              <button type="button" class="btn ghost sm" id="mgr-export">Xuất dữ liệu ▾</button>
+              <div class="menu" id="mgr-export-menu" hidden>
+                <button type="button" data-exp="raw">CSV thô (SPSS)</button>
+                <button type="button" data-exp="valid">CSV hợp lệ</button>
+                <button type="button" data-exp="codebook">Codebook</button>
+                <button type="button" data-exp="sps">Nhãn .sps</button>
+                <button type="button" data-exp="audit">Audit log</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="mgr-table-wrap" class="mgr-table-wrap"></div>
+        <div class="mgr-pager" id="mgr-pager"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>Tâm lý nhà đầu tư &amp; rủi ro sụp đổ giá cổ phiếu</span>
+      <span id="footer-ver">v1.0</span>
+    </div>
+  </footer>
+
+  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+  <div id="modal-host"></div>
+  <div id="print-area" class="print-area" hidden></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/schema.js"></script>
+  <script src="js/logic.js"></script>
+  <script src="js/export.js"></script>
+  <script src="js/word-export.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/manager.js"></script>
+</body>
+</html>
