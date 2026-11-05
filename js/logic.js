@@ -347,5 +347,6 @@ const Logic = (function () {
     computeQuality,
   };
 })();
+window.Logic = Logic;
 
 if (typeof module !== "undefined") module.exports = { Logic };

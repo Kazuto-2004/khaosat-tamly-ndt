@@ -116,3 +116,4 @@ const Api = (function () {
     setUnauthorizedHandler,
   };
 })();
+window.Api = Api;

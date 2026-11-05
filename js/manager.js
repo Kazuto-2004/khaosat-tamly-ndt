@@ -667,3 +667,4 @@ const Manager = (function () {
 
   return { init, refresh, onNewResponse, getByCode, setActiveCode };
 })();
+window.Manager = Manager;

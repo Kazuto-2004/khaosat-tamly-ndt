@@ -260,3 +260,4 @@ const WordExport = (function () {
 
   return { downloadOne, downloadMany, displayName, fileName, buildBlob };
 })();
+window.WordExport = WordExport;
