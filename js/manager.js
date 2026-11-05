@@ -657,6 +657,16 @@ const Manager = (function () {
   }
 
   async function exportNamed(kind) {
+    if (kind === "review") {
+      try {
+        App.toast("Đang tạo danh sách rà soát…");
+        await Review.exportReviewXlsx();
+        App.toast("Đã tải Danh sách rà soát (.xlsx)");
+      } catch (e) {
+        App.toast(e.message || "Không xuất được file rà soát");
+      }
+      return;
+    }
     if (kind === "codebook") return ExportUtil.downloadText(stamp("codebook") + ".csv", ExportUtil.codebookCsv());
     if (kind === "sps") return ExportUtil.downloadText(stamp("labels") + ".sps", ExportUtil.spssSyntax(), "text/plain;charset=utf-8");
     if (kind === "audit") {
